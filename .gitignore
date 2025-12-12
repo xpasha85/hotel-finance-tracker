@@ -1,0 +1,22 @@
+# env
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# node
+frontend/node_modules/
+frontend/dist/
+
+# docker volumes / data
+data/receipts/*
+!data/receipts/.gitkeep
+
+# alembic
+backend/alembic/versions/__pycache__/
+
+# OS
+.DS_Store
+Thumbs.db
