@@ -1,5 +1,6 @@
 <script setup>
 import { ref, onMounted, watch, computed } from "vue";
+import { uploadReceipt } from "../api/receipts";
 import {
   listExpenses,
   createExpense,
@@ -30,6 +31,7 @@ const form = ref({
 
 // режим редактирования
 const editingId = ref(null);
+const uploading = ref({});
 
 const activeCategories = computed(() =>
   categories.value.filter((c) => c.is_active !== false)
@@ -89,6 +91,27 @@ async function loadExpenses() {
   const res = await listExpenses(params);
   expenses.value = res.data;
 }
+
+async function onUploadReceipt(expenseId, file) {
+  if (!file) return;
+
+  try {
+    uploading.value[expenseId] = true;
+
+    // upload чека у тебя сейчас admin-only
+    setAdminMode(true);
+
+    await uploadReceipt(expenseId, file);
+
+    await loadExpenses();
+  } catch (e) {
+    alert("Ошибка загрузки чека");
+    console.error(e);
+  } finally {
+    uploading.value[expenseId] = false;
+  }
+}
+
 
 function catName(id) {
   return categories.value.find((c) => c.id === id)?.name || id;
@@ -261,6 +284,31 @@ watch(
           <button v-if="!e.is_deleted" @click="startEdit(e)">Изменить</button>
           <button v-if="!e.is_deleted" @click="onDelete(e.id)">Удалить</button>
           <button v-else @click="onRestore(e.id)">Восстановить</button>
+
+          <!-- загрузка чека -->
+          <label
+            v-if="!e.is_deleted"
+            style="margin-left:6px; border:1px solid #ccc; padding:2px 6px; cursor:pointer;"
+          >
+            📎 Чек
+            <input
+              type="file"
+              accept="image/*,.pdf"
+              style="display:none"
+              @change="(ev) => onUploadReceipt(e.id, ev.target.files?.[0])"
+            />
+          </label>
+
+          <span v-if="uploading[e.id]" style="margin-left:6px;">⏳</span>
+
+          <a
+            v-if="e.receipt_path"
+            :href="`http://localhost:8000/receipts/${e.receipt_path}`"
+            target="_blank"
+            style="margin-left:6px;"
+          >
+            Открыть чек
+          </a>
         </td>
       </tr>
 
