@@ -2,6 +2,9 @@ import axios from "axios";
 
 export const api = axios.create({
   baseURL: "http://localhost:8000",
+  paramsSerializer: {
+    indexes: null, // ВАЖНО для FastAPI массивов
+  },
 });
 
 // временно: если хотим быть админом
