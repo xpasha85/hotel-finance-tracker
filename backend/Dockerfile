@@ -2,22 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# 1. pip
 RUN python -m pip install --upgrade pip
 
-# 2. зависимости (явно!)
+# 1) Сначала requirements (чтобы кешировалось)
 COPY requirements.txt /app/requirements.txt
-RUN python -m pip install --no-cache-dir \
-    fastapi \
-    "uvicorn[standard]" \
-    sqlalchemy \
-    psycopg[binary] \
-    alembic \
-    python-jose \
-    passlib[bcrypt] \
-    python-multipart \
-    pydantic \
-    pydantic-settings
+RUN python -m pip install --no-cache-dir -r /app/requirements.txt
 
-# 3. код
+# 2) Потом код
 COPY . /app
