@@ -15,3 +15,7 @@ export function deleteExpense(id) {
 export function restoreExpense(id) {
   return api.post(`/expenses/${id}/restore`);
 }
+
+export function updateExpense(id, data) {
+  return api.patch(`/expenses/${id}`, data);
+}

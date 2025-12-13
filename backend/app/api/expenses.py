@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, date, time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -9,18 +10,22 @@ from app.core.actor import get_actor, require_admin_role
 from app.models.expense import Expense
 from app.models.expense_history import ExpenseHistory
 from app.models.category import Category
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.expense import ExpenseOut, ExpenseCreate, ExpenseUpdate
+from app.schemas.expense_history import ExpenseHistoryOut
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
 
 ALLOWED_SOURCES = {"CASH", "CARD", "BANK"}
 
+
 def _dt_start(d: date) -> datetime:
     return datetime.combine(d, time.min)
 
+
 def _dt_end(d: date) -> datetime:
     return datetime.combine(d, time.max)
+
 
 def _make_diff(old: Expense, new_data: dict) -> dict:
     diff = {}
@@ -30,7 +35,14 @@ def _make_diff(old: Expense, new_data: dict) -> dict:
             diff[k] = {"old": old_v, "new": new_v}
     return diff
 
-def _write_history(db: Session, expense_id: uuid.UUID, action: str, diff: dict, actor_id: uuid.UUID) -> None:
+
+def _write_history(
+    db: Session,
+    expense_id: uuid.UUID,
+    action: str,
+    diff: dict,
+    actor_id: uuid.UUID,
+) -> None:
     h = ExpenseHistory(
         expense_id=expense_id,
         action=action,
@@ -38,6 +50,7 @@ def _write_history(db: Session, expense_id: uuid.UUID, action: str, diff: dict, 
         actor_id=actor_id,
     )
     db.add(h)
+
 
 @router.get("", response_model=list[ExpenseOut])
 def list_expenses(
@@ -54,9 +67,9 @@ def list_expenses(
     # По умолчанию менеджер НЕ видит удалённые.
     # Админ может включить include_deleted=true
     if include_deleted:
-        if actor.role != actor.role.ADMIN:  # type: ignore[attr-defined]
-            # на всякий — но лучше через require_admin_role, оставлю в явном виде:
+        if actor.role != UserRole.ADMIN:
             raise HTTPException(status_code=403, detail="Admin only for include_deleted")
+        # админ видит всё (и удалённые тоже)
     else:
         q = q.filter(Expense.is_deleted == False)  # noqa: E712
 
@@ -75,6 +88,7 @@ def list_expenses(
         q = q.filter(Expense.payment_source == ps)
 
     return q.order_by(Expense.spent_at.desc()).all()
+
 
 @router.post("", response_model=ExpenseOut)
 def create_expense(
@@ -104,14 +118,28 @@ def create_expense(
         deleted_by=None,
         created_by=actor.id,
     )
+
     db.add(exp)
+    db.flush()  # чтобы появился exp.id до commit
+
+    _write_history(
+        db,
+        exp.id,
+        "CREATE",
+        {
+            "amount_cents": {"old": None, "new": exp.amount_cents},
+            "payment_source": {"old": None, "new": exp.payment_source},
+            "category_id": {"old": None, "new": str(exp.category_id)},
+            "comment": {"old": None, "new": exp.comment},
+            "spent_at": {"old": None, "new": exp.spent_at.isoformat()},
+        },
+        actor.id,
+    )
+
     db.commit()
     db.refresh(exp)
-
-    _write_history(db, exp.id, "CREATE", {"created": True}, actor.id)
-    db.commit()
-
     return exp
+
 
 @router.patch("/{expense_id}", response_model=ExpenseOut)
 def update_expense(
@@ -124,10 +152,10 @@ def update_expense(
     if not exp:
         raise HTTPException(status_code=404, detail="Expense not found")
 
-    if exp.is_deleted and actor.role != actor.role.ADMIN:  # type: ignore[attr-defined]
+    if exp.is_deleted and actor.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Cannot edit deleted expense (admin only)")
 
-    update_data = {}
+    update_data: dict = {}
 
     if payload.amount_cents is not None:
         update_data["amount_cents"] = payload.amount_cents
@@ -157,14 +185,13 @@ def update_expense(
     for k, v in update_data.items():
         setattr(exp, k, v)
 
-    db.commit()
-    db.refresh(exp)
-
     if diff:
         _write_history(db, exp.id, "UPDATE", diff, actor.id)
-        db.commit()
 
+    db.commit()
+    db.refresh(exp)
     return exp
+
 
 @router.post("/{expense_id}/delete", response_model=ExpenseOut)
 def soft_delete_expense(
@@ -180,13 +207,20 @@ def soft_delete_expense(
         exp.is_deleted = True
         exp.deleted_at = datetime.utcnow()
         exp.deleted_by = actor.id
+
+        _write_history(
+            db,
+            exp.id,
+            "DELETE",
+            {"is_deleted": {"old": False, "new": True}},
+            actor.id,
+        )
+
         db.commit()
         db.refresh(exp)
 
-        _write_history(db, exp.id, "DELETE", {"is_deleted": {"old": False, "new": True}}, actor.id)
-        db.commit()
-
     return exp
+
 
 @router.post("/{expense_id}/restore", response_model=ExpenseOut)
 def restore_expense(
@@ -202,33 +236,31 @@ def restore_expense(
         exp.is_deleted = False
         exp.deleted_at = None
         exp.deleted_by = None
+
+        _write_history(
+            db,
+            exp.id,
+            "RESTORE",
+            {"is_deleted": {"old": True, "new": False}},
+            admin.id,
+        )
+
         db.commit()
         db.refresh(exp)
 
-        _write_history(db, exp.id, "RESTORE", {"is_deleted": {"old": True, "new": False}}, admin.id)
-        db.commit()
-
     return exp
 
-@router.get("/{expense_id}/history")
+
+@router.get("/{expense_id}/history", response_model=list[ExpenseHistoryOut])
 def get_expense_history(
     expense_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_admin_role),
+    admin: User = Depends(require_admin_role),
 ):
-    rows = (
-        db.query(ExpenseHistory)
-        .filter(ExpenseHistory.expense_id == expense_id)
-        .order_by(ExpenseHistory.created_at.asc())
-        .all()
-    )
-    return [
-        {
-            "id": str(r.id),
-            "action": r.action,
-            "diff_json": r.diff_json,
-            "actor_id": str(r.actor_id),
-            "created_at": r.created_at,
-        }
-        for r in rows
-    ]
+    rows = db.execute(
+        select(ExpenseHistory)
+        .where(ExpenseHistory.expense_id == expense_id)
+        .order_by(ExpenseHistory.created_at.desc())
+    ).scalars().all()
+
+    return rows
