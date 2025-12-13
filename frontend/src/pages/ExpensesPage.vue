@@ -10,6 +10,7 @@ import {
 } from "../api/expenses";
 import { listCategories } from "../api/categories";
 import { setAdminMode } from "../api/client";
+import { getExpenseHistory } from "../api/history";
 
 const expenses = ref([]);
 const categories = ref([]);
@@ -32,6 +33,10 @@ const form = ref({
 // режим редактирования
 const editingId = ref(null);
 const uploading = ref({});
+const historyOpenId = ref(null);
+const historyItems = ref([]);
+const historyLoading = ref(false);
+
 
 const activeCategories = computed(() =>
   categories.value.filter((c) => c.is_active !== false)
@@ -112,6 +117,36 @@ async function onUploadReceipt(expenseId, file) {
   }
 }
 
+async function toggleHistory(expenseId) {
+  if (historyOpenId.value === expenseId) {
+    historyOpenId.value = null;
+    historyItems.value = [];
+    return;
+  }
+
+  historyOpenId.value = expenseId;
+  historyLoading.value = true;
+  historyItems.value = [];
+
+  try {
+    setAdminMode(true); // history admin-only
+    const res = await getExpenseHistory(expenseId);
+    historyItems.value = res.data || [];
+  } catch (e) {
+    alert("Не удалось загрузить историю (нужен ADMIN)");
+    console.error(e);
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
+function prettyDiff(diff) {
+  try {
+    return JSON.stringify(diff, null, 2);
+  } catch {
+    return String(diff);
+  }
+}
 
 function catName(id) {
   return categories.value.find((c) => c.id === id)?.name || id;
@@ -270,53 +305,87 @@ watch(
       </tr>
     </thead>
     <tbody>
-      <tr
-        v-for="e in expenses"
-        :key="e.id"
-        :style="{ opacity: e.is_deleted ? 0.5 : 1 }"
-      >
-        <td>{{ new Date(e.spent_at).toLocaleString() }}</td>
-        <td>{{ (e.amount_cents / 100).toFixed(2) }}</td>
-        <td>{{ catName(e.category_id) }}</td>
-        <td>{{ e.payment_source }}</td>
-        <td>{{ e.is_deleted ? "Удалено" : "ОК" }}</td>
-        <td>
-          <button v-if="!e.is_deleted" @click="startEdit(e)">Изменить</button>
-          <button v-if="!e.is_deleted" @click="onDelete(e.id)">Удалить</button>
-          <button v-else @click="onRestore(e.id)">Восстановить</button>
+      <!-- Ряды расходов + раскрываемая история -->
+      <template v-for="e in expenses" :key="e.id">
+        <tr :style="{ opacity: e.is_deleted ? 0.5 : 1 }">
+          <td>{{ new Date(e.spent_at).toLocaleString() }}</td>
+          <td>{{ (e.amount_cents / 100).toFixed(2) }}</td>
+          <td>{{ catName(e.category_id) }}</td>
+          <td>{{ e.payment_source }}</td>
+          <td>{{ e.is_deleted ? "Удалено" : "ОК" }}</td>
+          <td>
+            <button v-if="!e.is_deleted" @click="startEdit(e)">Изменить</button>
+            <button v-if="!e.is_deleted" @click="onDelete(e.id)">Удалить</button>
+            <button v-else @click="onRestore(e.id)">Восстановить</button>
 
-          <!-- загрузка чека -->
-          <label
-            v-if="!e.is_deleted"
-            style="margin-left:6px; border:1px solid #ccc; padding:2px 6px; cursor:pointer;"
-          >
-            📎 Чек
-            <input
-              type="file"
-              accept="image/*,.pdf"
-              style="display:none"
-              @change="(ev) => onUploadReceipt(e.id, ev.target.files?.[0])"
-            />
-          </label>
+            <button style="margin-left:6px;" @click="toggleHistory(e.id)">
+              {{ historyOpenId === e.id ? "Скрыть историю" : "История" }}
+            </button>
 
-          <span v-if="uploading[e.id]" style="margin-left:6px;">⏳</span>
+            <!-- загрузка чека -->
+            <label
+              v-if="!e.is_deleted"
+              style="margin-left:6px; border:1px solid #ccc; padding:2px 6px; cursor:pointer;"
+            >
+              📎 Чек
+              <input
+                type="file"
+                accept="image/*,.pdf"
+                style="display:none"
+                @change="(ev) => onUploadReceipt(e.id, ev.target.files?.[0])"
+              />
+            </label>
 
-          <a
-            v-if="e.receipt_path"
-            :href="`http://localhost:8000/receipts/${e.receipt_path}`"
-            target="_blank"
-            style="margin-left:6px;"
-          >
-            Открыть чек
-          </a>
-        </td>
-      </tr>
+            <span v-if="uploading[e.id]" style="margin-left:6px;">⏳</span>
 
+            <a
+              v-if="e.receipt_path"
+              :href="`http://localhost:8000/receipts/${e.receipt_path}`"
+              target="_blank"
+              style="margin-left:6px;"
+            >
+              Открыть чек
+            </a>
+          </td>
+        </tr>
+
+        <!-- Раскрытая история под строкой -->
+        <tr v-if="historyOpenId === e.id">
+          <td colspan="6" style="background:#fafafa;">
+            <div style="padding:10px;">
+              <div v-if="historyLoading">Загрузка...</div>
+
+              <div v-else-if="historyItems.length === 0">
+                История пустая
+              </div>
+
+              <div v-else style="display:flex; flex-direction:column; gap:10px;">
+                <div
+                  v-for="h in historyItems"
+                  :key="h.id"
+                  style="border:1px solid #ddd; padding:8px;"
+                >
+                  <div style="font-weight:600;">
+                    {{ h.action }} — {{ new Date(h.created_at).toLocaleString() }}
+                  </div>
+                  <div style="font-size:12px; opacity:0.8;">
+                    actor: {{ h.actor_id }}
+                  </div>
+                  <pre style="margin:8px 0 0; white-space:pre-wrap;">{{ prettyDiff(h.diff_json) }}</pre>
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      </template>
+
+      <!-- Пусто -->
       <tr v-if="expenses.length === 0">
         <td colspan="6" style="text-align: center; padding: 16px">
           Пока нет расходов по выбранным фильтрам
         </td>
       </tr>
     </tbody>
+
   </table>
 </template>
