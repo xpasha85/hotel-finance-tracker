@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, date, time
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -27,12 +28,25 @@ def _dt_end(d: date) -> datetime:
     return datetime.combine(d, time.max)
 
 
+def _jsonable(v: Any) -> Any:
+    if v is None:
+        return None
+    if isinstance(v, uuid.UUID):
+        return str(v)
+    if isinstance(v, (datetime, date)):
+        return v.isoformat()
+    # Enum (UserRole / PaymentSource etc.)
+    if hasattr(v, "value"):
+        return getattr(v, "value")
+    return v
+
+
 def _make_diff(old: Expense, new_data: dict) -> dict:
     diff = {}
     for k, new_v in new_data.items():
         old_v = getattr(old, k)
         if old_v != new_v:
-            diff[k] = {"old": old_v, "new": new_v}
+            diff[k] = {"old": _jsonable(old_v), "new": _jsonable(new_v)}
     return diff
 
 

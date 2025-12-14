@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.actor import get_actor, require_admin_role
+from app.core.actor import get_actor
 from app.models.expense import Expense
 from app.models.user import User, UserRole
 
