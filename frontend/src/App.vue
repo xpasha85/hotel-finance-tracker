@@ -1,5 +1,5 @@
 <template>
-  <n-config-provider>
+  <n-config-provider :theme="darkTheme">
     <n-message-provider>
       <n-dialog-provider>
         <n-notification-provider>
@@ -8,12 +8,12 @@
               bordered
               collapse-mode="width"
               :collapsed-width="64"
-              :width="220"
+              :width="240"
               show-trigger
             >
               <div class="brand">
                 <div class="brand__title">Шурале</div>
-                <div class="brand__sub">Финансы</div>
+                <div class="brand__sub">Finance Tracker</div>
               </div>
 
               <n-menu
@@ -30,12 +30,11 @@
                 </div>
 
                 <div class="header__right">
-                  <span class="hint">MVP</span>
+                  <n-tag size="small" type="info" :bordered="false">MVP</n-tag>
                 </div>
               </n-layout-header>
 
               <n-layout-content class="content">
-                <!-- Пока без роутера: просто показываем главную страницу -->
                 <ExpensesPage />
               </n-layout-content>
             </n-layout>
@@ -48,7 +47,7 @@
 
 <script setup lang="ts">
 import { h } from 'vue'
-import { NIcon } from 'naive-ui'
+import { darkTheme, NIcon } from 'naive-ui'
 import ExpensesPage from './pages/ExpensesPage.vue'
 import { CashOutline, PricetagOutline } from '@vicons/ionicons5'
 
@@ -58,12 +57,12 @@ const Icon = (icon: any) => () => h(NIcon, null, { default: () => h(icon) })
 
 const menuOptions = [
   {
-    label: 'Траты',
+    label: 'Операции',
     key: 'expenses',
     icon: Icon(CashOutline)
   },
   {
-    label: 'Категории (позже)',
+    label: 'Категории',
     key: 'categories',
     disabled: true,
     icon: Icon(PricetagOutline)
@@ -71,7 +70,7 @@ const menuOptions = [
 ]
 
 function onMenu(_key: string) {
-  // пока без роутинга — ничего не делаем
+  // пока без роутера
 }
 </script>
 
@@ -82,7 +81,7 @@ function onMenu(_key: string) {
 }
 .brand__title {
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 800;
   line-height: 1.2;
 }
 .brand__sub {
@@ -90,6 +89,7 @@ function onMenu(_key: string) {
   opacity: 0.75;
   margin-top: 2px;
 }
+
 .header {
   height: 56px;
   display: flex;
@@ -97,14 +97,15 @@ function onMenu(_key: string) {
   justify-content: space-between;
   padding: 0 16px;
 }
+
 .header__title {
-  font-weight: 700;
+  font-weight: 800;
 }
-.hint {
-  font-size: 12px;
-  opacity: 0.7;
-}
+
 .content {
   padding: 16px;
+  /* фон контента чуть отличается от layout — выглядит “дороже” */
+  background: rgba(255, 255, 255, 0.02);
+  min-height: calc(100vh - 56px);
 }
 </style>
