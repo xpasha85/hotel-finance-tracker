@@ -1,391 +1,683 @@
-<script setup>
-import { ref, onMounted, watch, computed } from "vue";
-import { uploadReceipt } from "../api/receipts";
+<template>
+  <div class="page">
+    <div class="topbar">
+      <div class="left">
+        <n-h2 style="margin: 0">Операции</n-h2>
+        <n-space align="center" size="small" style="margin-top: 6px">
+          <n-button-group>
+            <n-button size="small" :type="periodPreset === 'today' ? 'primary' : 'default'" @click="setPreset('today')">
+              Сегодня
+            </n-button>
+            <n-button size="small" :type="periodPreset === 'yesterday' ? 'primary' : 'default'" @click="setPreset('yesterday')">
+              Вчера
+            </n-button>
+            <n-button size="small" :type="periodPreset === '7d' ? 'primary' : 'default'" @click="setPreset('7d')">
+              7 дней
+            </n-button>
+            <n-button size="small" :type="periodPreset === 'month' ? 'primary' : 'default'" @click="setPreset('month')">
+              Месяц
+            </n-button>
+          </n-button-group>
+
+          <n-date-picker
+            v-model:value="rangeValue"
+            type="daterange"
+            size="small"
+            clearable
+            :shortcuts="dateShortcuts"
+            @update:value="onRangeChanged"
+          />
+        </n-space>
+      </div>
+
+      <div class="right">
+        <n-space align="center">
+          <n-select
+            v-model:value="filters.categoryIds"
+            multiple
+            clearable
+            size="small"
+            placeholder="Категории"
+            :options="categoryOptions"
+            style="min-width: 220px"
+          />
+          <n-select
+            v-model:value="filters.paymentSource"
+            clearable
+            size="small"
+            placeholder="Источник"
+            :options="paymentSourceOptions"
+            style="width: 140px"
+          />
+
+          <n-divider vertical />
+
+          <n-space align="center" size="small">
+            <n-text depth="3">Role:</n-text>
+            <n-radio-group
+              size="small"
+              v-model:value="role"
+              @update:value="onRoleChanged"
+            >
+              <n-radio-button value="MANAGER">Manager</n-radio-button>
+              <n-radio-button value="ADMIN">Admin</n-radio-button>
+            </n-radio-group>
+          </n-space>
+
+          <n-switch
+            v-if="isAdmin"
+            v-model:value="filters.includeDeleted"
+            size="small"
+            @update:value="reload"
+          >
+            <template #checked>Удалённые</template>
+            <template #unchecked>Удалённые</template>
+          </n-switch>
+
+          <n-button type="primary" @click="openCreate">
+            + Трата
+          </n-button>
+        </n-space>
+      </div>
+    </div>
+
+    <n-card size="small" style="margin-top: 12px">
+      <n-space justify="space-between" align="center">
+        <n-space align="center" size="large">
+          <div class="metric">
+            <div class="metric__label">Итого</div>
+            <div class="metric__value">{{ formatRub(totalRub) }}</div>
+          </div>
+          <div class="metric">
+            <div class="metric__label">Кол-во</div>
+            <div class="metric__value">{{ expenses.length }}</div>
+          </div>
+          <div class="metric">
+            <div class="metric__label">Средний чек</div>
+            <div class="metric__value">{{ formatRub(avgRub) }}</div>
+          </div>
+          <div class="metric">
+            <div class="metric__label">Макс</div>
+            <div class="metric__value">{{ formatRub(maxRub) }}</div>
+          </div>
+        </n-space>
+
+        <n-button size="small" secondary @click="reload" :loading="loading">
+          Обновить
+        </n-button>
+      </n-space>
+    </n-card>
+
+    <n-card size="small" style="margin-top: 12px" :content-style="{ padding: '0' }">
+      <n-data-table
+        :columns="columns"
+        :data="expenses"
+        :loading="loading"
+        :row-key="rowKey"
+        :pagination="false"
+        @row-click="onRowClick"
+        class="table"
+      />
+      <div v-if="!loading && expenses.length === 0" class="empty">
+        <n-empty description="Нет расходов по выбранным фильтрам" />
+      </div>
+    </n-card>
+
+    <!-- Drawer create/edit -->
+    <n-drawer v-model:show="drawer.show" :width="460" placement="right">
+      <n-drawer-content :title="drawer.mode === 'create' ? 'Добавить трату' : 'Редактировать трату'">
+        <n-form
+          ref="formRef"
+          :model="form"
+          :rules="rules"
+          label-placement="top"
+          require-mark-placement="right-hanging"
+        >
+          <n-form-item label="Сумма (₽)" path="amountRub">
+            <n-input-number
+              v-model:value="form.amountRub"
+              :min="0"
+              :step="50"
+              style="width: 100%"
+              placeholder="Например 1200.50"
+            />
+          </n-form-item>
+
+          <n-form-item label="Категория" path="category_id">
+            <n-select
+              v-model:value="form.category_id"
+              :options="activeCategoryOptions"
+              placeholder="Выбери категорию"
+            />
+          </n-form-item>
+
+          <n-form-item label="Источник оплаты" path="payment_source">
+            <n-select
+              v-model:value="form.payment_source"
+              :options="paymentSourceOptions"
+              placeholder="CASH / CARD / BANK"
+            />
+          </n-form-item>
+
+          <n-form-item label="Дата/время (опционально)" path="spent_at">
+            <n-date-picker v-model:value="form.spent_at" type="datetime" clearable />
+          </n-form-item>
+
+          <n-form-item label="Комментарий" path="comment">
+            <n-input v-model:value="form.comment" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" />
+          </n-form-item>
+        </n-form>
+
+        <template #footer>
+          <n-space justify="space-between" align="center">
+            <n-space>
+              <n-button secondary @click="drawer.show = false">Закрыть</n-button>
+            </n-space>
+
+            <n-space>
+              <n-button
+                v-if="drawer.mode === 'edit'"
+                type="error"
+                secondary
+                @click="onDelete"
+              >
+                Удалить
+              </n-button>
+
+              <n-button type="primary" :loading="saving" @click="onSave">
+                {{ drawer.mode === 'create' ? 'Создать' : 'Сохранить' }}
+              </n-button>
+            </n-space>
+          </n-space>
+        </template>
+      </n-drawer-content>
+    </n-drawer>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, reactive, ref, h } from 'vue'
+import { useDialog, useMessage, NTag } from 'naive-ui'
+
+// API (твои файлы)
+import { listCategories } from '../api/categories.js'
 import {
   listExpenses,
   createExpense,
   updateExpense,
   deleteExpense,
-  restoreExpense,
-} from "../api/expenses";
-import { listCategories } from "../api/categories";
-import { setAdminMode } from "../api/client";
-import { getExpenseHistory } from "../api/history";
+  restoreExpense
+} from '../api/expenses.js'
 
-const expenses = ref([]);
-const categories = ref([]);
+import { setAdminMode } from '../api/client.js'
 
-const filters = ref({
-  period: "today", // today | yesterday | month
-  category_id: null,
-  payment_source: null,
-  include_deleted: false,
-});
+// -------------------- state --------------------
+const message = useMessage()
+const dialog = useDialog()
 
-// форма
-const form = ref({
-  amountRub: "", // ввод в рублях (строка)
-  category_id: null,
-  payment_source: "CASH",
-  comment: "",
-});
+const loading = ref(false)
+const saving = ref(false)
 
-// режим редактирования
-const editingId = ref(null);
-const uploading = ref({});
-const historyOpenId = ref(null);
-const historyItems = ref([]);
-const historyLoading = ref(false);
+const categories = ref<any[]>([])
+const expenses = ref<any[]>([])
 
 
-const activeCategories = computed(() =>
-  categories.value.filter((c) => c.is_active !== false)
-);
+const role = ref<'MANAGER' | 'ADMIN'>('MANAGER')
+const isAdmin = computed(() => role.value === 'ADMIN')
 
-function periodToDates() {
-  const now = new Date();
-  if (filters.value.period === "today") {
-    return { date_from: now.toISOString().slice(0, 10) };
-  }
-  if (filters.value.period === "yesterday") {
-    const d = new Date(now);
-    d.setDate(d.getDate() - 1);
-    const s = d.toISOString().slice(0, 10);
-    return { date_from: s, date_to: s };
-  }
-  if (filters.value.period === "month") {
-    const from = new Date(now.getFullYear(), now.getMonth(), 1);
-    return { date_from: from.toISOString().slice(0, 10) };
-  }
-  return {};
+// filters
+const filters = reactive({
+  dateFrom: '', // YYYY-MM-DD
+  dateTo: '',   // YYYY-MM-DD
+  categoryIds: [] as string[],
+  paymentSource: null as null | 'CASH' | 'CARD' | 'BANK',
+  includeDeleted: false
+})
+
+// date preset + range picker (Naive uses timestamp numbers)
+const periodPreset = ref<'today' | 'yesterday' | '7d' | 'month' | 'custom'>('7d')
+const rangeValue = ref<[number, number] | null>(null)
+
+// -------------------- helpers --------------------
+function pad2(n: number) {
+  return String(n).padStart(2, '0')
 }
-
-function rubToCents(rubStr) {
-  const s = String(rubStr).trim().replace(",", ".");
-  if (!s) return null;
-  const n = Number(s);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return Math.round(n * 100);
+function toYMD(d: Date) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
 }
-
-function resetFormKeepDefaults() {
-  form.value.amountRub = "";
-  form.value.comment = "";
-  // category_id и payment_source не трогаем (удобно)
+function startOfDay(d: Date) {
+  const x = new Date(d)
+  x.setHours(0, 0, 0, 0)
+  return x
 }
-
-async function loadCategories() {
-  const res = await listCategories();
-  categories.value = res.data;
-
-  if (!form.value.category_id) {
-    const first = activeCategories.value[0];
-    if (first) form.value.category_id = first.id;
-  }
+function endOfDay(d: Date) {
+  const x = new Date(d)
+  x.setHours(23, 59, 59, 999)
+  return x
 }
+function setPreset(p: typeof periodPreset.value) {
+  periodPreset.value = p
+  const now = new Date()
+  let from: Date
+  let to: Date
 
-async function loadExpenses() {
-  const params = {
-    ...periodToDates(),
-    category_ids: filters.value.category_id
-      ? [filters.value.category_id]
-      : undefined,
-    payment_source: filters.value.payment_source || undefined,
-    include_deleted: filters.value.include_deleted || undefined,
-  };
-  const res = await listExpenses(params);
-  expenses.value = res.data;
-}
-
-async function onUploadReceipt(expenseId, file) {
-  if (!file) return;
-
-  try {
-    uploading.value[expenseId] = true;
-
-    // upload чека у тебя сейчас admin-only
-    setAdminMode(true);
-
-    await uploadReceipt(expenseId, file);
-
-    await loadExpenses();
-  } catch (e) {
-    alert("Ошибка загрузки чека");
-    console.error(e);
-  } finally {
-    uploading.value[expenseId] = false;
-  }
-}
-
-async function toggleHistory(expenseId) {
-  if (historyOpenId.value === expenseId) {
-    historyOpenId.value = null;
-    historyItems.value = [];
-    return;
-  }
-
-  historyOpenId.value = expenseId;
-  historyLoading.value = true;
-  historyItems.value = [];
-
-  try {
-    setAdminMode(true); // history admin-only
-    const res = await getExpenseHistory(expenseId);
-    historyItems.value = res.data || [];
-  } catch (e) {
-    alert("Не удалось загрузить историю (нужен ADMIN)");
-    console.error(e);
-  } finally {
-    historyLoading.value = false;
-  }
-}
-
-function prettyDiff(diff) {
-  try {
-    return JSON.stringify(diff, null, 2);
-  } catch {
-    return String(diff);
-  }
-}
-
-function catName(id) {
-  return categories.value.find((c) => c.id === id)?.name || id;
-}
-
-function startEdit(e) {
-  editingId.value = e.id;
-  form.value.amountRub = (e.amount_cents / 100).toFixed(2);
-  form.value.category_id = e.category_id;
-  form.value.payment_source = e.payment_source;
-  form.value.comment = e.comment || "";
-}
-
-function cancelEdit() {
-  editingId.value = null;
-  resetFormKeepDefaults();
-}
-
-async function submitForm() {
-  const amount_cents = rubToCents(form.value.amountRub);
-  if (!amount_cents) {
-    alert("Введите сумму (например 1200 или 1200.50)");
-    return;
-  }
-  if (!form.value.category_id) {
-    alert("Выберите категорию");
-    return;
-  }
-
-  const payload = {
-    amount_cents,
-    payment_source: form.value.payment_source,
-    category_id: form.value.category_id,
-    comment: form.value.comment || null,
-  };
-
-  if (!editingId.value) {
-    await createExpense(payload);
+  if (p === 'today') {
+    from = startOfDay(now)
+    to = endOfDay(now)
+  } else if (p === 'yesterday') {
+    const y = new Date(now)
+    y.setDate(y.getDate() - 1)
+    from = startOfDay(y)
+    to = endOfDay(y)
+  } else if (p === '7d') {
+    const f = new Date(now)
+    f.setDate(f.getDate() - 6)
+    from = startOfDay(f)
+    to = endOfDay(now)
+  } else if (p === 'month') {
+    const f = new Date(now.getFullYear(), now.getMonth(), 1)
+    from = startOfDay(f)
+    to = endOfDay(now)
   } else {
-    await updateExpense(editingId.value, payload);
-    editingId.value = null;
+    // custom - не трогаем
+    return
   }
 
-  resetFormKeepDefaults();
-  await loadExpenses();
+  filters.dateFrom = toYMD(from)
+  filters.dateTo = toYMD(to)
+  rangeValue.value = [from.getTime(), to.getTime()]
+  reload()
 }
 
-async function onDelete(id) {
-  await deleteExpense(id);
-  await loadExpenses();
-}
-
-async function onRestore(id) {
-  setAdminMode(true);
-  await restoreExpense(id);
-  await loadExpenses();
-}
-
-onMounted(async () => {
-  await loadCategories();
-  await loadExpenses();
-});
-
-watch(
-  filters,
-  async () => {
-    setAdminMode(!!filters.value.include_deleted);
-    await loadExpenses();
+const dateShortcuts = {
+  'Сегодня': () => {
+    const n = new Date()
+    return [startOfDay(n).getTime(), endOfDay(n).getTime()]
   },
-  { deep: true }
-);
+  'Вчера': () => {
+    const n = new Date()
+    n.setDate(n.getDate() - 1)
+    return [startOfDay(n).getTime(), endOfDay(n).getTime()]
+  },
+  '7 дней': () => {
+    const n = new Date()
+    const f = new Date()
+    f.setDate(f.getDate() - 6)
+    return [startOfDay(f).getTime(), endOfDay(n).getTime()]
+  },
+  'Месяц': () => {
+    const n = new Date()
+    const f = new Date(n.getFullYear(), n.getMonth(), 1)
+    return [startOfDay(f).getTime(), endOfDay(n).getTime()]
+  }
+} as const
+
+function onRangeChanged(v: [number, number] | null) {
+  if (!v) {
+    // если очистили — вернём 7d
+    setPreset('7d')
+    return
+  }
+  periodPreset.value = 'custom'
+  const from = new Date(v[0])
+  const to = new Date(v[1])
+  filters.dateFrom = toYMD(from)
+  filters.dateTo = toYMD(to)
+  reload()
+}
+
+// -------------------- load --------------------
+async function loadCategories() {
+  const res = await listCategories()
+  categories.value = res.data
+}
+
+
+async function reload() {
+  loading.value = true
+  try {
+    const params: any = {
+      date_from: filters.dateFrom || undefined,
+      date_to: filters.dateTo || undefined,
+      payment_source: filters.paymentSource || undefined
+    }
+
+    if (filters.categoryIds.length) {
+      params.category_ids = filters.categoryIds
+    }
+
+    if (isAdmin.value) {
+      params.include_deleted = filters.includeDeleted ? 'true' : 'false'
+    }
+
+    const res = await listExpenses(params)
+    expenses.value = Array.isArray(res.data) ? res.data : []
+  } catch (e: any) {
+    message.error(e?.message || 'Ошибка загрузки расходов')
+  } finally {
+    loading.value = false
+  }
+}
+
+
+function onRoleChanged(v: 'MANAGER' | 'ADMIN') {
+  role.value = v
+  setAdminMode(v === 'ADMIN')
+  if (!isAdmin.value) {
+    filters.includeDeleted = false
+  }
+  reload()
+}
+
+// -------------------- computed: metrics --------------------
+function centsToRub(cents: number) {
+  return (cents || 0) / 100
+}
+const totalRub = computed(() => expenses.value.reduce((sum, x) => sum + centsToRub(x.amount_cents), 0))
+const avgRub = computed(() => (expenses.value.length ? totalRub.value / expenses.value.length : 0))
+const maxRub = computed(() => {
+  if (!expenses.value.length) return 0
+  return Math.max(...expenses.value.map((x) => centsToRub(x.amount_cents)))
+})
+
+function formatRub(v: number) {
+  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB' }).format(v || 0)
+}
+
+// categories map/options
+const categoryMap = computed(() => {
+  const m = new Map<string, any>()
+  for (const c of categories.value) m.set(c.id, c)
+  return m
+})
+const categoryOptions = computed(() =>
+  categories.value.map((c) => ({ label: c.is_active ? c.name : `${c.name} (архив)`, value: c.id }))
+)
+const activeCategoryOptions = computed(() =>
+  categories.value.filter((c) => c.is_active).map((c) => ({ label: c.name, value: c.id }))
+)
+
+const paymentSourceOptions = [
+  { label: 'Наличные', value: 'CASH' },
+  { label: 'Карта', value: 'CARD' },
+  { label: 'Банк', value: 'BANK' }
+] as const
+
+// -------------------- table --------------------
+const rowKey = (row: any) => row.id
+
+function fmtDate(iso: string) {
+  if (!iso) return ''
+  // очень простой формат, без dayjs
+  const d = new Date(iso)
+  return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+
+const columns = computed(() => {
+  const cols: any[] = [
+    {
+      title: 'Дата',
+      key: 'spent_at',
+      width: 120,
+      render(row: any) {
+        return fmtDate(row.spent_at)
+      }
+    },
+    {
+      title: 'Сумма',
+      key: 'amount_cents',
+      width: 130,
+      render(row: any) {
+        return formatRub(centsToRub(row.amount_cents))
+      }
+    },
+    {
+      title: 'Категория',
+      key: 'category_id',
+      render(row: any) {
+        const c = categoryMap.value.get(row.category_id)
+        return c ? c.name : row.category_id
+      }
+    },
+    {
+      title: 'Источник',
+      key: 'payment_source',
+      width: 120,
+      render(row: any) {
+        const map: any = { CASH: 'Наличные', CARD: 'Карта', BANK: 'Банк' }
+        return h(NTag, { size: 'small', type: 'info', bordered: false }, { default: () => map[row.payment_source] || row.payment_source })
+      }
+    },
+    {
+      title: 'Статус',
+      key: 'is_deleted',
+      width: 110,
+      render(row: any) {
+        return row.is_deleted
+          ? h(NTag, { size: 'small', type: 'error', bordered: false }, { default: () => 'Удалено' })
+          : h(NTag, { size: 'small', type: 'success', bordered: false }, { default: () => 'Ок' })
+      }
+    },
+    {
+      title: 'Действия',
+      key: 'actions',
+      width: 160,
+      render(row: any) {
+        return h(
+          'div',
+          { style: 'display:flex; gap:8px; align-items:center;' },
+          [
+            h(
+              'a',
+              {
+                href: '#',
+                onClick: (e: any) => {
+                  e.preventDefault()
+                  openEdit(row)
+                }
+              },
+              'Редакт.'
+            ),
+            row.is_deleted && isAdmin.value
+              ? h(
+                  'a',
+                  {
+                    href: '#',
+                    onClick: (e: any) => {
+                      e.preventDefault()
+                      onRestore(row)
+                    }
+                  },
+                  'Восст.'
+                )
+              : null
+          ].filter(Boolean)
+        )
+      }
+    }
+  ]
+  return cols
+})
+
+function onRowClick(row: any) {
+  openEdit(row)
+}
+
+// -------------------- drawer form --------------------
+const drawer = reactive({
+  show: false,
+  mode: 'create' as 'create' | 'edit',
+  editingId: null as string | null
+})
+
+const formRef = ref()
+const form = reactive({
+  amountRub: null as number | null,
+  payment_source: null as null | 'CASH' | 'CARD' | 'BANK',
+  category_id: null as string | null,
+  comment: '' as string,
+  spent_at: null as number | null // timestamp ms for datetime picker
+})
+
+const rules = {
+  amountRub: {
+    required: true,
+    message: 'Укажи сумму',
+    trigger: ['input', 'blur'],
+    validator: (_: any, v: any) => (typeof v === 'number' && v > 0 ? true : new Error('Сумма должна быть > 0'))
+  },
+  payment_source: { required: true, message: 'Выбери источник', trigger: ['change', 'blur'] },
+  category_id: { required: true, message: 'Выбери категорию', trigger: ['change', 'blur'] }
+}
+
+function resetForm() {
+  form.amountRub = null
+  form.payment_source = null
+  form.category_id = null
+  form.comment = ''
+  form.spent_at = null
+}
+
+function openCreate() {
+  drawer.mode = 'create'
+  drawer.editingId = null
+  resetForm()
+  drawer.show = true
+}
+
+function openEdit(row: any) {
+  drawer.mode = 'edit'
+  drawer.editingId = row.id
+  form.amountRub = centsToRub(row.amount_cents)
+  form.payment_source = row.payment_source
+  form.category_id = row.category_id
+  form.comment = row.comment || ''
+  form.spent_at = row.spent_at ? new Date(row.spent_at).getTime() : null
+  drawer.show = true
+}
+
+function rubToCents(rub: number) {
+  return Math.round((rub || 0) * 100)
+}
+
+async function onSave() {
+  saving.value = true
+  try {
+    await formRef.value?.validate()
+
+    const payload: any = {
+      amount_cents: rubToCents(form.amountRub || 0),
+      payment_source: form.payment_source,
+      category_id: form.category_id,
+      comment: form.comment?.trim() || null,
+      spent_at: form.spent_at ? new Date(form.spent_at).toISOString() : null
+    }
+
+    if (drawer.mode === 'create') {
+      await createExpense(payload)
+      message.success('Трата создана')
+    } else {
+      await updateExpense(drawer.editingId!, payload)
+      message.success('Изменения сохранены')
+    }
+
+    drawer.show = false
+    await reload()
+  } catch (e: any) {
+    if (e?.message) message.error(e.message)
+    else message.error('Ошибка сохранения')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function onDelete() {
+  if (!drawer.editingId) return
+  dialog.warning({
+    title: 'Удалить трату?',
+    content: 'Трата будет помечена как удалённая (soft-delete).',
+    positiveText: 'Удалить',
+    negativeText: 'Отмена',
+    onPositiveClick: async () => {
+      try {
+        await deleteExpense(drawer.editingId!)
+        message.success('Удалено')
+        drawer.show = false
+        await reload()
+      } catch (e: any) {
+        message.error(e?.message || 'Ошибка удаления')
+      }
+    }
+  })
+}
+
+async function onRestore(row: any) {
+  dialog.info({
+    title: 'Восстановить?',
+    content: 'Трата станет снова активной.',
+    positiveText: 'Восстановить',
+    negativeText: 'Отмена',
+    onPositiveClick: async () => {
+      try {
+        await restoreExpense(row.id)
+        message.success('Восстановлено')
+        await reload()
+      } catch (e: any) {
+        message.error(e?.message || 'Ошибка восстановления')
+      }
+    }
+  })
+}
+
+// -------------------- lifecycle --------------------
+onMounted(async () => {
+  // default role manager
+  setAdminMode(false)
+
+  await loadCategories()
+  setPreset('7d')
+})
 </script>
 
-<template>
-  <h2>Операции</h2>
+<style scoped>
+.page {
+  display: flex;
+  flex-direction: column;
+}
 
-  <div style="border: 1px solid #ddd; padding: 12px; margin-bottom: 12px">
-    <h3 style="margin: 0 0 8px 0">
-      {{ editingId ? "Редактировать расход" : "Добавить расход" }}
-    </h3>
+.topbar {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
 
-    <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
-      <input
-        v-model="form.amountRub"
-        placeholder="Сумма, руб (например 1200.50)"
-        style="width: 220px"
-      />
+@media (max-width: 1100px) {
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
 
-      <select v-model="form.category_id" style="width: 220px">
-        <option v-for="c in activeCategories" :key="c.id" :value="c.id">
-          {{ c.name }}
-        </option>
-      </select>
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.metric__label {
+  font-size: 12px;
+  opacity: 0.7;
+}
+.metric__value {
+  font-size: 18px;
+  font-weight: 800;
+}
 
-      <select v-model="form.payment_source" style="width: 160px">
-        <option value="CASH">Наличные</option>
-        <option value="CARD">Карта</option>
-        <option value="BANK">Р/С</option>
-      </select>
+.table :deep(.n-data-table-th) {
+  font-weight: 700;
+}
 
-      <input
-        v-model="form.comment"
-        placeholder="Комментарий (необязательно)"
-        style="width: 320px"
-      />
-
-      <button @click="submitForm">
-        {{ editingId ? "Сохранить" : "Создать" }}
-      </button>
-
-      <button v-if="editingId" @click="cancelEdit">Отмена</button>
-    </div>
-  </div>
-
-  <div style="margin-bottom: 8px">
-    <select v-model="filters.period">
-      <option value="today">Сегодня</option>
-      <option value="yesterday">Вчера</option>
-      <option value="month">Месяц</option>
-    </select>
-
-    <select v-model="filters.category_id">
-      <option :value="null">Все категории</option>
-      <option v-for="c in categories" :key="c.id" :value="c.id">
-        {{ c.name }}
-      </option>
-    </select>
-
-    <select v-model="filters.payment_source">
-      <option :value="null">Все источники</option>
-      <option value="CASH">Наличные</option>
-      <option value="CARD">Карта</option>
-      <option value="BANK">Р/С</option>
-    </select>
-
-    <label style="margin-left: 8px">
-      <input type="checkbox" v-model="filters.include_deleted" />
-      Показать удалённые (admin)
-    </label>
-  </div>
-
-  <table
-    border="1"
-    cellpadding="6"
-    cellspacing="0"
-    style="border-collapse: collapse; width: 100%"
-  >
-    <thead>
-      <tr>
-        <th style="width: 160px">Дата</th>
-        <th style="width: 120px">Сумма</th>
-        <th>Категория</th>
-        <th style="width: 120px">Источник</th>
-        <th style="width: 120px">Статус</th>
-        <th style="width: 220px">Действия</th>
-      </tr>
-    </thead>
-    <tbody>
-      <!-- Ряды расходов + раскрываемая история -->
-      <template v-for="e in expenses" :key="e.id">
-        <tr :style="{ opacity: e.is_deleted ? 0.5 : 1 }">
-          <td>{{ new Date(e.spent_at).toLocaleString() }}</td>
-          <td>{{ (e.amount_cents / 100).toFixed(2) }}</td>
-          <td>{{ catName(e.category_id) }}</td>
-          <td>{{ e.payment_source }}</td>
-          <td>{{ e.is_deleted ? "Удалено" : "ОК" }}</td>
-          <td>
-            <button v-if="!e.is_deleted" @click="startEdit(e)">Изменить</button>
-            <button v-if="!e.is_deleted" @click="onDelete(e.id)">Удалить</button>
-            <button v-else @click="onRestore(e.id)">Восстановить</button>
-
-            <button style="margin-left:6px;" @click="toggleHistory(e.id)">
-              {{ historyOpenId === e.id ? "Скрыть историю" : "История" }}
-            </button>
-
-            <!-- загрузка чека -->
-            <label
-              v-if="!e.is_deleted"
-              style="margin-left:6px; border:1px solid #ccc; padding:2px 6px; cursor:pointer;"
-            >
-              📎 Чек
-              <input
-                type="file"
-                accept="image/*,.pdf"
-                style="display:none"
-                @change="(ev) => onUploadReceipt(e.id, ev.target.files?.[0])"
-              />
-            </label>
-
-            <span v-if="uploading[e.id]" style="margin-left:6px;">⏳</span>
-
-            <a
-              v-if="e.receipt_path"
-              :href="`http://localhost:8000/receipts/${e.receipt_path}`"
-              target="_blank"
-              style="margin-left:6px;"
-            >
-              Открыть чек
-            </a>
-          </td>
-        </tr>
-
-        <!-- Раскрытая история под строкой -->
-        <tr v-if="historyOpenId === e.id">
-          <td colspan="6" style="background:#fafafa;">
-            <div style="padding:10px;">
-              <div v-if="historyLoading">Загрузка...</div>
-
-              <div v-else-if="historyItems.length === 0">
-                История пустая
-              </div>
-
-              <div v-else style="display:flex; flex-direction:column; gap:10px;">
-                <div
-                  v-for="h in historyItems"
-                  :key="h.id"
-                  style="border:1px solid #ddd; padding:8px;"
-                >
-                  <div style="font-weight:600;">
-                    {{ h.action }} — {{ new Date(h.created_at).toLocaleString() }}
-                  </div>
-                  <div style="font-size:12px; opacity:0.8;">
-                    actor: {{ h.actor_id }}
-                  </div>
-                  <pre style="margin:8px 0 0; white-space:pre-wrap;">{{ prettyDiff(h.diff_json) }}</pre>
-                </div>
-              </div>
-            </div>
-          </td>
-        </tr>
-      </template>
-
-      <!-- Пусто -->
-      <tr v-if="expenses.length === 0">
-        <td colspan="6" style="text-align: center; padding: 16px">
-          Пока нет расходов по выбранным фильтрам
-        </td>
-      </tr>
-    </tbody>
-
-  </table>
-</template>
+.empty {
+  padding: 18px;
+}
+</style>
